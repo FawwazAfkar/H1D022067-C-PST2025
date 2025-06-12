@@ -1,80 +1,150 @@
 #include <Arduino.h>
-
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
 /*
- * Water Level Monitoring System
- * This code reads the water level from a sensor and controls LEDs and a buzzer based on the water level.
- * - Green LED: Low water level
- * - Yellow LED: Medium water level
- * - Red LED: High water level (danger)
- * - Buzzer: Sounds when water level is high
+ * =================================================================
+ * Sistem Deteksi Dini Banjir Standalone (Tanpa Koneksi Internet)
+ * =================================================================
+ * Deskripsi:
+ * Kode ini membaca jarak dari sensor ultrasonik untuk mendeteksi ketinggian air.
+ * Berdasarkan ketinggian tersebut, sistem akan mengontrol 3 LED dan 1 Buzzer
+ * sebagai indikator status bahaya banjir.
+ * * Versi ini sudah diperbaiki dengan menambahkan Function Prototypes.
+ * =================================================================
  */
 
-// Pin definitions
-const int waterLevelPin = A0;     // Water level sensor connected to A0
-const int buzzerPin = D5;         // Buzzer connected to D5
-const int redLedPin = D1;         // Red LED connected to D1
-const int yellowLedPin = D2;      // Yellow LED connected to D2
-const int greenLedPin = D3;       // Green LED connected to D3
+// --- Definisi Pin Hardware ---
+const int PIN_TRIG = D1; // GPIO5
+const int PIN_ECHO = D2; // GPIO4
 
-// Threshold values (adjust according to your sensor)
-const int lowThreshold = 300;     // Low water level threshold
-const int mediumThreshold = 600;  // Medium water level threshold
-// Note: Adjust these thresholds based on your specific sensor and calibration
+const int PIN_LED_HIJAU = D5;  // GPIO14
+const int PIN_LED_KUNING = D6; // GPIO12
+const int PIN_LED_MERAH = D7;  // GPIO13
+const int PIN_BUZZER = D8;     // GPIO15
+
+// --- Logika Deteksi Banjir ---
+const float JARAK_ALAT_KE_TANAH = 100.0;
+const float BATAS_JARAK_WASPADA = 95.0; 
+const float BATAS_JARAK_BAHAYA = 90.0;  
+
+// Variabel untuk timer buzzer Waspada
+unsigned long waktuBuzzerSebelumnya = 0;
+bool statusBuzzer = LOW;
+
+
+// =================================================================
+// >>>>> BAGIAN YANG DIPERBAIKI ADA DI SINI <<<<<
+// --- Deklarasi Fungsi (Function Prototypes) ---
+// Memberitahu compiler tentang fungsi yang akan digunakan.
+float ukurJarakCm();
+void statusAman();
+void statusWaspada();
+void statusBahaya();
+// =================================================================
+
 
 void setup() {
-  // Initialize serial communication
+  // Mulai komunikasi serial untuk debugging di Serial Monitor
   Serial.begin(9600);
-  
-  // Set pin modes
-  pinMode(waterLevelPin, INPUT);
-  pinMode(buzzerPin, OUTPUT);
-  pinMode(redLedPin, OUTPUT);
-  pinMode(yellowLedPin, OUTPUT);
-  pinMode(greenLedPin, OUTPUT);
-  
-  // Turn off all LEDs and buzzer initially
-  digitalWrite(redLedPin, LOW);
-  digitalWrite(yellowLedPin, LOW);
-  digitalWrite(greenLedPin, LOW);
-  digitalWrite(buzzerPin, LOW);
-  
-  Serial.println("Water Level Monitoring System Started");
+  delay(100);
+
+  // Atur mode untuk setiap pin
+  pinMode(PIN_TRIG, OUTPUT);
+  pinMode(PIN_ECHO, INPUT);
+  pinMode(PIN_LED_HIJAU, OUTPUT);
+  pinMode(PIN_LED_KUNING, OUTPUT);
+  pinMode(PIN_LED_MERAH, OUTPUT);
+  pinMode(PIN_BUZZER, OUTPUT);
+
+  // Pastikan semua output mati pada saat pertama kali dinyalakan
+  digitalWrite(PIN_LED_HIJAU, LOW);
+  digitalWrite(PIN_LED_KUNING, LOW);
+  digitalWrite(PIN_LED_MERAH, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
+
+  Serial.println("==========================================");
+  Serial.println("Sistem Deteksi Banjir Standalone Dimulai");
+  Serial.println("==========================================");
 }
 
 void loop() {
-  // Read water level sensor value
-  int sensorValue = analogRead(waterLevelPin);
+  // 1. Panggil fungsi untuk mengukur jarak
+  float jarakCm = ukurJarakCm();
   
-  // Print the sensor value to serial monitor
-  Serial.print("Water Level Sensor Value: ");
-  Serial.println(sensorValue);
-  
-  // Determine water level and control LEDs/buzzer
-  if (sensorValue < lowThreshold) {
-    // Low water level - Green LED
-    digitalWrite(greenLedPin, HIGH);
-    digitalWrite(yellowLedPin, LOW);
-    digitalWrite(redLedPin, LOW);
-    digitalWrite(buzzerPin, LOW);
-    Serial.println("Status: Low Water Level");
-  } 
-  else if (sensorValue >= lowThreshold && sensorValue < mediumThreshold) {
-    // Medium water level - Yellow LED
-    digitalWrite(greenLedPin, LOW);
-    digitalWrite(yellowLedPin, HIGH);
-    digitalWrite(redLedPin, LOW);
-    digitalWrite(buzzerPin, LOW);
-    Serial.println("Status: Medium Water Level");
-  } 
-  else {
-    // High water level - Red LED and buzzer
-    digitalWrite(greenLedPin, LOW);
-    digitalWrite(yellowLedPin, LOW);
-    digitalWrite(redLedPin, HIGH);
-    digitalWrite(buzzerPin, HIGH);
-    Serial.println("Status: HIGH Water Level - WARNING!");
+  // 2. Hitung perkiraan ketinggian air untuk ditampilkan di Serial Monitor
+  float ketinggianAir = JARAK_ALAT_KE_TANAH - jarakCm;
+  if (ketinggianAir < 0) {
+    ketinggianAir = 0;
   }
+
+  // 3. Tampilkan hasil pembacaan di Serial Monitor
+  Serial.print("Jarak Terbaca: ");
+  Serial.print(jarakCm);
+  Serial.print(" cm  |  Perkiraan Ketinggian Air: ");
+  Serial.print(ketinggianAir);
+  Serial.println(" cm");
+
+  // 4. Tentukan status bahaya berdasarkan jarak yang terbaca
+  if (jarakCm > BATAS_JARAK_WASPADA) {
+    statusAman();
+  } 
+  else if (jarakCm <= BATAS_JARAK_WASPADA && jarakCm > BATAS_JARAK_BAHAYA) {
+    statusWaspada();
+  } 
+  else if (jarakCm <= BATAS_JARAK_BAHAYA) {
+    if (jarakCm > 0) {
+      statusBahaya();
+    } else {
+      statusAman(); 
+    }
+  }
+
+  delay(1000); 
+}
+
+/**
+ * @brief Mengukur jarak menggunakan sensor HC-SR04.
+ * @return Jarak dalam satuan sentimeter (cm).
+ */
+float ukurJarakCm() {
+  digitalWrite(PIN_TRIG, LOW);
+  delayMicroseconds(2);
+  digitalWrite(PIN_TRIG, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(PIN_TRIG, LOW);
   
-  // Delay between readings
-  delay(1000);
+  long durasi = pulseIn(PIN_ECHO, HIGH, 30000);
+  
+  return durasi * 0.0343 / 2.0;
+}
+
+// --- Kumpulan Fungsi untuk Mengatur Status ---
+
+void statusAman() {
+  Serial.println("Status: AMAN");
+  digitalWrite(PIN_LED_HIJAU, HIGH);
+  digitalWrite(PIN_LED_KUNING, LOW);
+  digitalWrite(PIN_LED_MERAH, LOW);
+  digitalWrite(PIN_BUZZER, LOW);
+}
+
+void statusWaspada() {
+  Serial.println("Status: WASPADA");
+  digitalWrite(PIN_LED_HIJAU, LOW);
+  digitalWrite(PIN_LED_KUNING, HIGH);
+  digitalWrite(PIN_LED_MERAH, LOW);
+
+  if (millis() - waktuBuzzerSebelumnya >= 1500) { 
+    waktuBuzzerSebelumnya = millis();
+    statusBuzzer = !statusBuzzer; 
+    digitalWrite(PIN_BUZZER, statusBuzzer);
+  }
+}
+
+void statusBahaya() {
+  Serial.println("Status: BAHAYA");
+  digitalWrite(PIN_LED_HIJAU, LOW);
+  digitalWrite(PIN_LED_KUNING, LOW);
+  digitalWrite(PIN_LED_MERAH, HIGH);
+  digitalWrite(PIN_BUZZER, HIGH); 
 }
